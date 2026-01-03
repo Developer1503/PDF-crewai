@@ -224,25 +224,44 @@ def render_step_indicator():
     steps = ["Upload", "Configure", "Analyze", "Interact"]
     current = st.session_state.current_step
     
-    # Calculate progress for bar
-    progress = (current - 1) / (len(steps) - 1) * 100
+    # Use columns for a cleaner approach
+    cols = st.columns(len(steps))
     
-    st.markdown(f"""
-    <div class="progress-flow">
-        <div class="progress-line"></div>
-        <div class="progress-line-fill" style="width: {progress}%;"></div>
-        {''.join([f'''
-        <div style="z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 0.5rem;">
-            <div class="step-bubble {'active' if i+1 == current else 'completed' if i+1 < current else ''}">
-                {i+1}
-            </div>
-            <div style="font-size: 0.8rem; color: {'white' if i+1 == current else '#666'}; font-weight: {'600' if i+1 == current else 'normal'};">
-                {step}
-            </div>
-        </div>
-        ''' for i, step in enumerate(steps)])}
-    </div>
-    """, unsafe_allow_html=True)
+    for i, (col, step) in enumerate(zip(cols, steps)):
+        step_num = i + 1
+        with col:
+            if step_num < current:
+                # Completed
+                st.markdown(f"""
+                <div style="text-align: center;">
+                    <div style="width: 40px; height: 40px; border-radius: 50%; background: #11998e; 
+                                color: white; display: flex; align-items: center; justify-content: center; 
+                                margin: 0 auto; font-weight: bold;">✓</div>
+                    <div style="margin-top: 0.5rem; font-size: 0.8rem; color: #11998e;">{step}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            elif step_num == current:
+                # Active
+                st.markdown(f"""
+                <div style="text-align: center;">
+                    <div style="width: 40px; height: 40px; border-radius: 50%; background: #667eea; 
+                                color: white; display: flex; align-items: center; justify-content: center; 
+                                margin: 0 auto; font-weight: bold; box-shadow: 0 0 15px rgba(102, 126, 234, 0.5);">{step_num}</div>
+                    <div style="margin-top: 0.5rem; font-size: 0.8rem; color: white; font-weight: 600;">{step}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                # Pending
+                st.markdown(f"""
+                <div style="text-align: center;">
+                    <div style="width: 40px; height: 40px; border-radius: 50%; background: #2d3139; 
+                                color: #666; display: flex; align-items: center; justify-content: center; 
+                                margin: 0 auto; font-weight: bold;">{step_num}</div>
+                    <div style="margin-top: 0.5rem; font-size: 0.8rem; color: #666;">{step}</div>
+                </div>
+                """, unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
 
 def render_agent_status(agent_name, role, status):
     status_color = "#444"
