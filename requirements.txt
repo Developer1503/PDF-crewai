@@ -1,0 +1,14 @@
+crewai
+crewai-tools
+python-dotenv
+langchain
+langchain-google-genai
+langchain-groq
+streamlit
+pypdf
+litellm
+pymupdf
+Pillow
+google-generativeai
+streamlit-lottie
+gTTS
