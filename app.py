@@ -6,9 +6,17 @@ from dotenv import load_dotenv
 from gtts import gTTS
 from io import BytesIO
 import litellm
+import speech_recognition as sr
 
 from config.llm import get_llm_with_smart_fallback
 from tools.pdf_reader import PDFReadTool
+
+# Try to import audio recorder, fallback if not available
+try:
+    from audio_recorder_streamlit import audio_recorder
+    AUDIO_RECORDER_AVAILABLE = True
+except ImportError:
+    AUDIO_RECORDER_AVAILABLE = False
 
 # Load environment variables
 load_dotenv()
@@ -117,7 +125,9 @@ def init_session_state():
         'chat_history': [],
         'processing': False,
         'provider': 'groq',
-        'use_turbo': True
+        'use_turbo': True,
+        'voice_input': None,
+        'voice_text': ''
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -204,6 +214,35 @@ def generate_audio(text):
         return fp
     except Exception as e:
         return None
+
+def transcribe_audio(audio_bytes):
+    """Convert audio to text using speech recognition"""
+    try:
+        recognizer = sr.Recognizer()
+        
+        # Save audio bytes to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio:
+            tmp_audio.write(audio_bytes)
+            tmp_audio_path = tmp_audio.name
+        
+        # Load audio file
+        with sr.AudioFile(tmp_audio_path) as source:
+            audio_data = recognizer.record(source)
+        
+        # Recognize speech using Google Speech Recognition
+        text = recognizer.recognize_google(audio_data)
+        
+        # Clean up temp file
+        os.unlink(tmp_audio_path)
+        
+        return text
+    except sr.UnknownValueError:
+        return "❌ Could not understand audio. Please try again."
+    except sr.RequestError as e:
+        return f"❌ Speech recognition service error: {e}"
+    except Exception as e:
+        return f"❌ Error processing audio: {e}"
+
 
 # --- Main App ---
 
@@ -365,7 +404,37 @@ def main():
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # Chat Input
+        # Voice Input Section (outside form)
+        if AUDIO_RECORDER_AVAILABLE:
+            st.markdown("**🎤 Voice Input** (Click to record, click again to stop)")
+            audio_bytes = audio_recorder(
+                text="",
+                recording_color="#667eea",
+                neutral_color="#6aa36f",
+                icon_name="microphone",
+                icon_size="2x",
+            )
+            
+            if audio_bytes and audio_bytes != st.session_state.voice_input:
+                st.session_state.voice_input = audio_bytes
+                with st.spinner("🎧 Transcribing your voice..."):
+                    transcribed_text = transcribe_audio(audio_bytes)
+                    if transcribed_text and not transcribed_text.startswith("❌"):
+                        st.session_state.voice_text = transcribed_text
+                        st.success(f"✅ Transcribed: {transcribed_text}")
+                        # Automatically add to chat
+                        st.session_state.chat_history.append({"role": "user", "content": transcribed_text})
+                        st.session_state.voice_text = ""
+                        st.rerun()
+                    else:
+                        st.error(transcribed_text)
+        else:
+            st.info("💡 **Tip**: Install `audio-recorder-streamlit` and `SpeechRecognition` for voice input support")
+        
+        st.markdown("---")
+        
+        # Text Input Section
+        st.markdown("**⌨️ Text Input**")
         with st.form("chat_form", clear_on_submit=True):
             col1, col2 = st.columns([5, 1])
             
@@ -373,7 +442,8 @@ def main():
                 user_input = st.text_input(
                     "Ask anything about your document...",
                     placeholder="e.g., What are the main conclusions? Who are the authors? What methodology was used?",
-                    label_visibility="collapsed"
+                    label_visibility="collapsed",
+                    value=st.session_state.voice_text
                 )
             
             with col2:
@@ -382,6 +452,7 @@ def main():
             if submit and user_input:
                 # Add user message
                 st.session_state.chat_history.append({"role": "user", "content": user_input})
+                st.session_state.voice_text = ""
                 st.rerun()
         
         # Process last user message if exists and no AI response yet

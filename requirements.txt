@@ -12,3 +12,7 @@ Pillow
 google-generativeai
 streamlit-lottie
 gTTS
+SpeechRecognition
+audio-recorder-streamlit
+PyAudio
+pydub
