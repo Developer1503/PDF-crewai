@@ -148,6 +148,16 @@ def get_managers():
         'export_handler': ExportHandler()
     }
 
+# Initialize storage session state BEFORE creating managers
+if 'storage_documents' not in st.session_state:
+    st.session_state.storage_documents = {}
+if 'storage_conversations' not in st.session_state:
+    st.session_state.storage_conversations = {}
+if 'storage_settings' not in st.session_state:
+    st.session_state.storage_settings = {}
+if 'storage_analytics' not in st.session_state:
+    st.session_state.storage_analytics = {}
+
 managers = get_managers()
 
 # Session State Initialization
