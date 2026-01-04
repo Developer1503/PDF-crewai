@@ -1,0 +1,17 @@
+
+# Security
+.env
+.env.local
+secrets.toml
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# System
+.DS_Store
+Thumbs.db
