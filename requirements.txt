@@ -8,6 +8,8 @@ langchain-groq
 streamlit
 pypdf
 litellm
+fastapi
+uvicorn
 pymupdf
 Pillow
 google-generativeai

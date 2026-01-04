@@ -136,7 +136,6 @@ def load_custom_css():
 load_custom_css()
 
 # Initialize managers
-@st.cache_resource
 def get_managers():
     """Initialize all manager instances"""
     return {
