@@ -79,6 +79,7 @@ class StorageManager:
         Returns document ID
         """
         doc_id = self.generate_document_id(text)
+        self._init_storage()
         
         # Check if document already exists
         if doc_id in st.session_state.storage_documents:
@@ -130,6 +131,7 @@ class StorageManager:
     
     def list_documents(self) -> List[Dict]:
         """List all stored documents with metadata"""
+        self._init_storage()
         docs = []
         for doc_id, doc in st.session_state.storage_documents.items():
             docs.append({
@@ -223,6 +225,7 @@ class StorageManager:
     
     def get_storage_stats(self) -> Dict:
         """Get storage usage statistics"""
+        self._init_storage()
         total_docs = len(st.session_state.storage_documents)
         total_convs = len(st.session_state.storage_conversations)
         
