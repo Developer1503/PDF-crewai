@@ -225,6 +225,7 @@ class StorageManager:
     
     def get_storage_stats(self) -> Dict:
         """Get storage usage statistics"""
+        # Force initialization before accessing session state
         self._init_storage()
         total_docs = len(st.session_state.storage_documents)
         total_convs = len(st.session_state.storage_conversations)
