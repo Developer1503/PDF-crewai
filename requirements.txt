@@ -36,3 +36,8 @@ pdfplumber>=0.10.0
 # OCR Dependencies
 pytesseract>=0.3.10
 opencv-python>=4.8.0
+
+# Data Analysis & Visualization
+plotly>=5.18.0
+pandas>=2.0.0
+numpy>=1.24.0
