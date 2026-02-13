@@ -541,7 +541,7 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     
-    uploaded_file = st.file_uploader("", type="pdf", label_visibility="collapsed")
+    uploaded_file = st.file_uploader("Upload PDF", type="pdf", label_visibility="collapsed")
     
     if uploaded_file and uploaded_file.name != st.session_state.pdf_name:
         with st.spinner("📖 Analyzing document..."):
