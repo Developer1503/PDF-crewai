@@ -291,8 +291,8 @@ def extract_pdf_content(pdf_path):
         return None
 
 
-def get_ai_response(user_query, pdf_context, provider="groq", use_turbo=True):
-    """Get AI response with citation-enhanced prompting."""
+def get_ai_response_stream(user_query, pdf_context, provider="groq", use_turbo=True):
+    """Get AI response with streaming."""
     try:
         llm, provider_used = get_llm_with_smart_fallback(
             primary_provider=provider,
@@ -336,28 +336,19 @@ Instructions:
             messages=messages,
             api_key=api_key,
             temperature=0.3,
-            max_tokens=2000
+            max_tokens=2000,
+            stream=True
         )
 
-        response_text = response.choices[0].message.content
-
-        # Extract citations from the response
-        citation_data = managers['citation_engine'].extract_citations(response_text)
-
-        return {
-            'response': response_text,
-            'provider': provider_used,
-            'tokens': response.usage.total_tokens if hasattr(response, 'usage') else 0,
-            'citation_data': citation_data,
-        }
+        for chunk in response:
+            if hasattr(chunk.choices[0], 'delta') and hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
+                yield {
+                    'chunk': chunk.choices[0].delta.content,
+                    'provider': provider_used
+                }
 
     except Exception as e:
-        return {
-            'error': True,
-            'response': f"Error: {str(e)}",
-            'provider': None,
-            'citation_data': None,
-        }
+        yield {'error': True, 'response': f"Error: {str(e)}"}
 
 
 # ──────────────────────────────────────────────
@@ -389,6 +380,7 @@ with st.sidebar:
                 st.rerun()
 
     # Navigation
+    st.divider()
     st.markdown('<div class="nav-section">', unsafe_allow_html=True)
     st.markdown('<div class="nav-title">NAVIGATION</div>', unsafe_allow_html=True)
 
@@ -405,6 +397,7 @@ with st.sidebar:
     st.markdown('</div>', unsafe_allow_html=True)
 
     # Document Fingerprint
+    st.divider()
     if st.session_state.pdf_uploaded:
         st.markdown('<div class="doc-fingerprint">', unsafe_allow_html=True)
         st.markdown('<div class="doc-fingerprint-title">DOCUMENT FINGERPRINT</div>', unsafe_allow_html=True)
@@ -419,16 +412,29 @@ with st.sidebar:
             <span class="doc-info-value">Scientific Paper</span>
         </div>
         <div class="doc-info-item">
-            <span class="doc-info-label">Est. Read Time</span>
-            <span class="doc-info-value">{read_time} Minutes</span>
+            <span class="doc-info-label">Page Count</span>
+            <span class="doc-info-value">12</span>
         </div>
         <div class="doc-info-item">
-            <span class="doc-info-label">Words</span>
+            <span class="doc-info-label">Word Count</span>
             <span class="doc-info-value">{word_count:,}</span>
+        </div>
+        <div class="doc-info-item">
+            <span class="doc-info-label">Est. Read Time</span>
+            <span class="doc-info-value">{read_time} Min</span>
+        </div>
+        <div class="doc-info-item">
+            <span class="doc-info-label">Language</span>
+            <span class="doc-info-value">English</span>
+        </div>
+        <div class="doc-info-item">
+            <span class="doc-info-label">Complexity Score</span>
+            <span class="doc-info-value">8.5/10</span>
         </div>
         """, unsafe_allow_html=True)
 
         st.markdown('<div class="doc-fingerprint-title" style="margin-top: 16px;">KEY ENTITIES</div>', unsafe_allow_html=True)
+
         st.markdown("""
         <div>
             <span class="tag-badge tag-llm">LLM</span>
@@ -464,132 +470,197 @@ with st.sidebar:
     )
     st.session_state.provider = provider_choice
 
+    # Comparison Mode
+    if st.session_state.pdf_uploaded:
+        st.markdown('<div class="nav-title" style="margin-top:24px;">COMPARISON MODE</div>', unsafe_allow_html=True)
+        compare_file = st.file_uploader("Upload 2nd PDF to Compare", type="pdf", key="compare_upload", label_visibility="collapsed")
+        
+        if compare_file and (not hasattr(st.session_state, 'compare_file_name') or compare_file.name != st.session_state.compare_file_name):
+            with st.spinner("📖 Analyzing second document…"):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp2:
+                    tmp2.write(compare_file.getvalue())
+                pdf_text2 = extract_pdf_content(tmp2.name)
+                
+                if pdf_text2:
+                    st.session_state.compare_file_name = compare_file.name
+                    managers['chat'].context.add_message('user', "I have uploaded a second document for comparison. I will ask questions to compare the two papers. Here is the second document's text: \n\n" + pdf_text2[:15000])
+                    # Force a rerun to process the new document message
+                    st.rerun()
+
+
 
 # ──────────────────────────────────────────────
 # MAIN CONTENT AREA
 # ──────────────────────────────────────────────
 
-# Chat header
-msg_count = len(list(managers['chat'].context.messages))
-st.markdown(f"""
-<div class="chat-header">
-    <div class="chat-icon">💬</div>
-    <div>
-        <div class="chat-title">AI Research Chat</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-# Inject clipboard JS (if a copy was triggered)
-inject_clipboard_script()
-
-if not st.session_state.pdf_uploaded:
-    # ── Empty state ──
-    st.markdown("""
-    <div class="empty-state">
-        <h2>📄 Upload a Research Paper</h2>
-        <p>Upload a PDF document from the sidebar to start analyzing and asking questions</p>
+# 1. Header bar with title and Clear History button
+col_header1, col_header2 = st.columns([5, 1])
+with col_header1:
+    st.markdown(f"""
+    <div class="chat-header" style="border-bottom:none; margin-bottom:0px; padding-bottom:5px;">
+        <div class="chat-icon">💬</div>
+        <div>
+            <div class="chat-title">AI Research Chat</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
-else:
-    # ── Chat Messages ──
-    messages = list(managers['chat'].context.messages)
-
-    for i, msg in enumerate(messages):
-        citation_data = msg.get('metadata', {}).get('citation_data', None)
-        render_message_bubble(
-            message=msg,
-            index=i,
-            show_actions=(msg.get('role') == 'assistant'),
-            pdf_text=st.session_state.pdf_text or "",
-            citation_data=citation_data,
-        )
-
-    # ── Typing Indicator (show when processing) ──
-    if st.session_state.processing:
-        render_typing_indicator()
-
-    # ── Quick Actions ──
-    st.markdown('<div class="quick-actions">', unsafe_allow_html=True)
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        if st.button("📝 Summarize", use_container_width=True):
-            query = "Provide a comprehensive summary of this research paper"
-            managers['chat'].context.add_message('user', query)
-            st.rerun()
-
-    with col2:
-        if st.button("🔍 Key Findings", use_container_width=True):
-            query = "What are the key findings of this research?"
-            managers['chat'].context.add_message('user', query)
-            st.rerun()
-
-    with col3:
-        if st.button("📊 Extract Stats", use_container_width=True):
-            query = "Extract the main statistics and data from this paper, presenting them in a clear format with labels and values"
-            managers['chat'].context.add_message('user', query)
-            st.rerun()
-
-    with col4:
-        if st.button("🔄 References", use_container_width=True):
-            query = "List the main references cited in this paper"
-            managers['chat'].context.add_message('user', query)
-            st.rerun()
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # Clear history
-    col_clear, _ = st.columns([1, 5])
-    with col_clear:
-        if st.button("🗑️ Clear History", use_container_width=True):
-            managers['chat'].clear_conversation()
-            st.rerun()
-
-    # ── Input Area ──
-    with st.form("chat_form", clear_on_submit=True):
-        user_input = st.text_area(
-            "Ask a research question…",
-            placeholder="e.g., How does this methodology compare to standard autoregressive models?",
-            height=100,
-            label_visibility="collapsed"
-        )
-
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            voice_btn = st.form_submit_button("🎤", use_container_width=True)
-        with col2:
-            submit = st.form_submit_button("Analyze Query ➤", use_container_width=True, type="primary")
-
-        if submit and user_input:
-            managers['chat'].context.add_message('user', user_input)
-            st.rerun()
-
-    # ── Process Last Message (AI Response) ──
-    if messages and messages[-1]['role'] == 'user' and not st.session_state.processing:
-        st.session_state.processing = True
-        st.rerun()  # Rerun to show typing indicator
-
-    if st.session_state.processing and messages and messages[-1]['role'] == 'user':
-        user_query = messages[-1]['content']
-        result = get_ai_response(
-            user_query,
-            st.session_state.pdf_text,
-            st.session_state.provider,
-            st.session_state.use_turbo
-        )
-
-        if not result.get('error'):
-            managers['chat'].context.add_message(
-                'assistant',
-                result['response'],
-                {
-                    'provider': result['provider'],
-                    'confidence': 84,
-                    'tokens_used': result.get('tokens', 0),
-                    'citation_data': result.get('citation_data'),
-                }
-            )
-
-        st.session_state.processing = False
+with col_header2:
+    if st.button("🗑️ Clear History", key="clear_hist_top", use_container_width=True):
+        managers['chat'].clear_conversation()
         st.rerun()
+
+st.divider()
+
+# 2. Single quick actions pill bar
+st.markdown('<div class="toolbar-label" style="font-size:11px;font-weight:700;color:#9e8cca;margin-bottom:8px;">⚡ QUICK ACTIONS</div>', unsafe_allow_html=True)
+qa_cols = st.columns(7)
+with qa_cols[0]:
+    if st.button("📝 Summarize", key="qa_sum", use_container_width=True):
+        managers['chat'].context.add_message('user', "Provide a comprehensive summary of this research paper")
+        st.rerun()
+with qa_cols[1]:
+    if st.button("🔍 Key Findings", key="qa_fin", use_container_width=True):
+        managers['chat'].context.add_message('user', "What are the key findings of this research?")
+        st.rerun()
+with qa_cols[2]:
+    if st.button("📊 Extract Stats", key="qa_stats", use_container_width=True):
+        managers['chat'].context.add_message('user', "Extract the main statistics and data from this paper, presenting them in a clear format with labels and values")
+        st.rerun()
+with qa_cols[3]:
+    if st.button("🔄 References", key="qa_refs", use_container_width=True):
+        managers['chat'].context.add_message('user', "List the main references cited in this paper")
+        st.rerun()
+with qa_cols[4]:
+    if st.button("📊 Ext Tables", key="ao_tables", use_container_width=True):
+        managers['chat'].context.add_message('user', "Analyze the text and report any data or information that seems to be extracted from tables and figures. Summarize the data presented in them.")
+        st.rerun()
+with qa_cols[5]:
+    if st.button("📚 Auto-Biblio", key="ao_biblio", use_container_width=True):
+        managers['chat'].context.add_message('user', "Extract all references from this paper and format them correctly into an Auto-Bibliography with well-structured APA/MLA/Chicago formats.")
+        st.rerun()
+with qa_cols[6]:
+    chat_content = "# AI Research Report\n\n"
+    for msg in managers['chat'].context.messages:
+        role_label = "User Query" if msg['role'] == 'user' else "AI Analysis"
+        chat_content += f"## {role_label}\n{msg['content']}\n\n"
+    st.download_button(
+        label="📄 Export Report",
+        data=chat_content,
+        file_name=f"research_report_{datetime.now().strftime('%Y%m%d')}.md",
+        mime="text/markdown",
+        key="ao_export_main",
+        use_container_width=True
+    )
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# 3. Scrollable chat history container
+chat_container = st.container(height=400)
+
+with chat_container:
+    # Inject clipboard JS
+    inject_clipboard_script()
+
+    if not st.session_state.pdf_uploaded:
+        # Empty state
+        st.markdown("""
+        <div class="empty-state">
+            <h2>📄 Upload a Research Paper</h2>
+            <p>Upload a PDF document from the sidebar to start analyzing and asking questions</p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Render Chat Messages
+        messages = list(managers['chat'].context.messages)
+        for i, msg in enumerate(messages):
+            # Using custom render bubble inside st.chat_message
+            with st.chat_message(msg['role']):
+                citation_data = msg.get('metadata', {}).get('citation_data', None)
+                render_message_bubble(
+                    message=msg,
+                    index=i,
+                    show_actions=(msg.get('role') == 'assistant'),
+                    pdf_text=st.session_state.pdf_text or "",
+                    citation_data=citation_data,
+                )
+
+        # Typing Indicator
+        if st.session_state.processing:
+            with st.chat_message('assistant'):
+                render_typing_indicator()
+
+        # Place holder for streaming logic inside container
+        response_placeholder = st.empty()
+
+# 4 & 5. Premium Input Card and Submit
+st.markdown('<br>', unsafe_allow_html=True)
+st.markdown('<div class="input-card">', unsafe_allow_html=True)
+with st.form("chat_form", clear_on_submit=True):
+    user_input = st.text_area(
+        "Ask a research question…",
+        placeholder="e.g., How does this methodology compare to standard autoregressive models?",
+        height=90,
+        label_visibility="collapsed"
+    )
+    # Bottom row inside card
+    ic1, ic2, ic3 = st.columns([0.5, 0.5, 5])
+    with ic1:
+        st.form_submit_button("🎤", use_container_width=True)
+    with ic2:
+        pass
+    with ic3:
+        submit = st.form_submit_button("✦ Analyze Query", use_container_width=True, type="primary")
+
+    if submit and user_input:
+        managers['chat'].context.add_message('user', user_input)
+        st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
+
+# ── Process Last Message (AI Response) ──
+messages = list(managers['chat'].context.messages)
+if messages and messages[-1]['role'] == 'user' and not st.session_state.processing:
+    st.session_state.processing = True
+    st.rerun()  # Rerun to show typing indicator
+
+# Process Response Stream (outside UI rendering to avoid rerendering loops)
+if st.session_state.processing and messages and messages[-1]['role'] == 'user':
+    user_query = messages[-1]['content']
+    
+    # Put stream text safely inside the container place_holder defined above
+    full_response = ""
+    provider_used = st.session_state.provider
+    
+    stream_generator = get_ai_response_stream(
+        user_query,
+        st.session_state.pdf_text,
+        st.session_state.provider,
+        st.session_state.use_turbo
+    )
+    
+    for item in stream_generator:
+        if 'error' in item:
+            full_response = item['response']
+            break
+        full_response += item.get('chunk', '')
+        provider_used = item.get('provider', provider_used)
+        # Render temporary markdown while streaming
+        response_placeholder.markdown(f"**AI:** {full_response}▌")
+        
+    # Remove placeholder and add the complete message
+    response_placeholder.empty()
+
+    if full_response:
+        citation_data = managers['citation_engine'].extract_citations(full_response)
+        managers['chat'].context.add_message(
+            'assistant',
+            full_response,
+            {
+                'provider': provider_used,
+                'confidence': 84,
+                'tokens_used': 0, # Tokens could be estimated or omitted
+                'citation_data': citation_data,
+            }
+        )
+
+    st.session_state.processing = False
+    st.rerun()
