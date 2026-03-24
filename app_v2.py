@@ -16,6 +16,7 @@ from tools.pdf_reader import PDFReadTool
 from utils.chat_manager import ChatManager
 from utils.query_optimizer import QueryOptimizer
 from utils.citation_engine import CitationEngine
+from utils.vector_store import VectorStoreManager
 from components.chat_ui import (
     apply_enhanced_chat_styles,
     render_typing_indicator,
@@ -252,7 +253,8 @@ def get_managers():
     return {
         'chat': ChatManager(),
         'query_optimizer': QueryOptimizer(),
-        'citation_engine': CitationEngine()
+        'citation_engine': CitationEngine(),
+        'vector_store': VectorStoreManager(),
     }
 
 managers = get_managers()
@@ -266,6 +268,8 @@ def init_session_state():
         'pdf_name': None,
         'pdf_text': None,
         'pdf_path': None,
+        'pdf_fingerprint': None,      # SHA-256 of the indexed document
+        'vector_chunks_added': 0,     # chunks stored in this session
         'current_page': 'Current Paper',
         'provider': 'groq',
         'use_turbo': True,
@@ -291,8 +295,14 @@ def extract_pdf_content(pdf_path):
         return None
 
 
-def get_ai_response_stream(user_query, pdf_context, provider="groq", use_turbo=True):
-    """Get AI response with streaming."""
+def get_ai_response_stream(
+    user_query,
+    pdf_context,
+    provider="groq",
+    use_turbo=True,
+    doc_fingerprint: str = None,
+):
+    """Get AI response with streaming, using RAG context from the vector store."""
     try:
         llm, provider_used = get_llm_with_smart_fallback(
             primary_provider=provider,
@@ -306,29 +316,46 @@ def get_ai_response_stream(user_query, pdf_context, provider="groq", use_turbo=T
             model = "groq/llama-3.1-8b-instant" if use_turbo else "groq/llama-3.3-70b-versatile"
             api_key = os.getenv("GROQ_API_KEY")
 
-        # Optimize context
-        optimized_context = managers['query_optimizer'].optimize_context(
-            pdf_context, user_query, max_tokens=3000
-        )
+        # ── RAG: retrieve semantically relevant chunks ──
+        rag_context = ""
+        if doc_fingerprint:
+            try:
+                rag_context = managers['vector_store'].build_rag_context(
+                    query=user_query,
+                    doc_fingerprint=doc_fingerprint,
+                    n_results=6,
+                    min_score=0.20,
+                )
+            except Exception as rag_err:
+                # Graceful fallback — use classic query optimizer
+                rag_context = ""
+
+        # Fall back to classic optimizer if RAG returned nothing
+        if rag_context:
+            final_context = rag_context
+        else:
+            final_context = managers['query_optimizer'].optimize_context(
+                pdf_context, user_query, max_tokens=3000
+            )[:10000]
 
         # Enhanced system prompt with citation guidance
         system_prompt = f"""You are an expert research assistant analyzing academic papers and documents.
 
-Document Context:
-{optimized_context[:10000]}
+Relevant Document Excerpts (retrieved via semantic search):
+{final_context}
 
 Instructions:
-- Provide clear, concise, and accurate answers based on the document
-- Reference specific sections or pages when possible (use "Page X" format)
-- Use academic language appropriate for research
-- If information isn't in the document, state that clearly
-- Format responses with proper structure and citations
-- When providing statistics or data, present them clearly with labels
-- Include confidence indicators when making claims"""
+- Answer using ONLY the provided excerpts above.
+- Reference specific chunks or page numbers when visible (use "Page X" or "Chunk N").
+- Use academic language appropriate for research.
+- If the answer is not in the excerpts, say so clearly.
+- Format responses with proper structure and citations.
+- When providing statistics or data, present them with clear labels.
+- Include confidence indicators when making claims."""
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query}
+            {"role": "user", "content": user_query},
         ]
 
         response = litellm.completion(
@@ -337,14 +364,18 @@ Instructions:
             api_key=api_key,
             temperature=0.3,
             max_tokens=2000,
-            stream=True
+            stream=True,
         )
 
         for chunk in response:
-            if hasattr(chunk.choices[0], 'delta') and hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
+            if (
+                hasattr(chunk.choices[0], 'delta')
+                and hasattr(chunk.choices[0].delta, 'content')
+                and chunk.choices[0].delta.content
+            ):
                 yield {
                     'chunk': chunk.choices[0].delta.content,
-                    'provider': provider_used
+                    'provider': provider_used,
                 }
 
     except Exception as e:
@@ -377,6 +408,16 @@ with st.sidebar:
                 st.session_state.pdf_text = pdf_text
                 st.session_state.pdf_uploaded = True
                 managers['chat'].clear_conversation()
+
+                # ── Vector indexing (skips if already indexed) ──
+                with st.spinner("🔢 Building vector index…"):
+                    fingerprint, chunks_added = managers['vector_store'].index_document(
+                        filename=uploaded_file.name,
+                        text=pdf_text,
+                    )
+                    st.session_state.pdf_fingerprint = fingerprint
+                    st.session_state.vector_chunks_added = chunks_added
+
                 st.rerun()
 
     # Navigation
@@ -406,14 +447,22 @@ with st.sidebar:
         word_count = len((st.session_state.pdf_text or "").split())
         read_time = max(1, word_count // 250)
 
+        # Vector store status
+        chunks_added = st.session_state.get('vector_chunks_added', 0)
+        fp = st.session_state.get('pdf_fingerprint', '')
+        fp_short = fp[:12] + '…' if fp else 'N/A'
+        vector_status = '✅ Cached' if chunks_added == 0 and fp else f'🆕 {chunks_added} chunks'
+
+        # vector backend name
+        try:
+            vs_backend = managers['vector_store'].backend_name
+        except Exception:
+            vs_backend = 'N/A'
+
         st.markdown(f"""
         <div class="doc-info-item">
             <span class="doc-info-label">Type</span>
             <span class="doc-info-value">Scientific Paper</span>
-        </div>
-        <div class="doc-info-item">
-            <span class="doc-info-label">Page Count</span>
-            <span class="doc-info-value">12</span>
         </div>
         <div class="doc-info-item">
             <span class="doc-info-label">Word Count</span>
@@ -427,19 +476,22 @@ with st.sidebar:
             <span class="doc-info-label">Language</span>
             <span class="doc-info-value">English</span>
         </div>
-        <div class="doc-info-item">
-            <span class="doc-info-label">Complexity Score</span>
-            <span class="doc-info-value">8.5/10</span>
-        </div>
         """, unsafe_allow_html=True)
 
-        st.markdown('<div class="doc-fingerprint-title" style="margin-top: 16px;">KEY ENTITIES</div>', unsafe_allow_html=True)
-
-        st.markdown("""
-        <div>
-            <span class="tag-badge tag-llm">LLM</span>
-            <span class="tag-badge tag-inference">INFERENCE</span>
-            <span class="tag-badge tag-cuda">CUDA</span>
+        st.divider()
+        st.markdown('<div class="doc-fingerprint-title">VECTOR INDEX</div>', unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="doc-info-item">
+            <span class="doc-info-label">Backend</span>
+            <span class="doc-info-value">{vs_backend}</span>
+        </div>
+        <div class="doc-info-item">
+            <span class="doc-info-label">Status</span>
+            <span class="doc-info-value">{vector_status}</span>
+        </div>
+        <div class="doc-info-item">
+            <span class="doc-info-label">SHA-256</span>
+            <span class="doc-info-value" style="font-family:monospace;font-size:11px;">{fp_short}</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -634,7 +686,8 @@ if st.session_state.processing and messages and messages[-1]['role'] == 'user':
         user_query,
         st.session_state.pdf_text,
         st.session_state.provider,
-        st.session_state.use_turbo
+        st.session_state.use_turbo,
+        doc_fingerprint=st.session_state.get('pdf_fingerprint'),
     )
     
     for item in stream_generator:
