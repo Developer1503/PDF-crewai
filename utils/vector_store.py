@@ -58,32 +58,32 @@ def compute_pdf_fingerprint(content: str) -> str:
 
 def chunk_text(
     text: str,
-    chunk_size: int = 400,
-    overlap: int = 60,
+    chunk_size: int = 1500,
+    chunk_overlap: int = 300,
 ) -> List[str]:
     """
-    Split *text* into overlapping word-based chunks.
+    Split *text* into overlapping semantic chunks using Langchain's RecursiveCharacterTextSplitter.
 
     Args:
-        text:       Full document text.
-        chunk_size: Target number of words per chunk.
-        overlap:    Number of words to overlap between consecutive chunks.
+        text:          Full document text.
+        chunk_size:    Target number of characters per chunk.
+        chunk_overlap: Number of characters to overlap between consecutive chunks.
 
     Returns:
         List of text chunks.
     """
-    words = text.split()
-    if not words:
-        return []
+    try:
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+    except ImportError:
+        raise ImportError("langchain is required. Run: pip install langchain")
 
-    chunks: List[str] = []
-    step = max(1, chunk_size - overlap)
-    for i in range(0, len(words), step):
-        chunk = " ".join(words[i : i + chunk_size])
-        if chunk.strip():
-            chunks.append(chunk)
-
-    return chunks
+    splitter = RecursiveCharacterTextSplitter(
+        separators=["\n## ", "\n\n", "\n", " ", ""],
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        length_function=len,
+    )
+    return splitter.split_text(text)
 
 
 # ─────────────────────────────────────────────────────────

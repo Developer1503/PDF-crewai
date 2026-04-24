@@ -35,23 +35,35 @@ class ConversationContext:
             self._track_topic(content)
     
     def get_context_window(self, include_system: bool = True) -> List[Dict]:
-        """Get optimized context window for LLM"""
+        """
+        Layer 4: Conversation Window Management
+        Keep only the last N turns in context. Summarize older turns into a rolling memory summary.
+        """
         messages = list(self.messages)
         
-        # Calculate token usage (rough estimate)
-        total_tokens = 0
+        N_TURNS = 6  # Keep last 3 Q&A pairs full text
+        
+        recent_messages = messages[-N_TURNS:]
+        older_messages = messages[:-N_TURNS]
+        
         context_messages = []
         
-        # Add messages from most recent backwards
-        for msg in reversed(messages):
-            msg_tokens = len(msg['content']) // 4  # Rough estimate
-            if total_tokens + msg_tokens > self.max_tokens:
-                break
-            context_messages.insert(0, {
+        # Summarize older turns
+        if older_messages:
+            summary = "Previous context summary: "
+            user_queries = [m['content'][:50] for m in older_messages if m['role'] == 'user']
+            summary += f"User previously asked about: {', '.join(user_queries[:5])}..."
+            context_messages.append({
+                'role': 'system',
+                'content': summary
+            })
+        
+        # Add recent turns full text
+        for msg in recent_messages:
+            context_messages.append({
                 'role': msg['role'],
                 'content': msg['content']
             })
-            total_tokens += msg_tokens
         
         return context_messages
     
@@ -342,12 +354,28 @@ class ChatManager:
         return enhanced
     
     def _get_cache_key(self, message: str, context: str = None) -> str:
-        """Generate cache key for message"""
-        content = message
-        if context:
-            content += context[:500]  # Use first 500 chars of context
-        
-        return hashlib.md5(content.encode()).hexdigest()
+        """
+        Layer 6: Response Caching
+        Semantic caching (round embedding to a bucket) catches paraphrased repeats.
+        """
+        try:
+            from utils.vector_store import embed_texts
+            embedding = embed_texts([message])[0]
+            # Rounding to 1 decimal place creates a semantic bucket
+            bucketed = [round(val, 1) for val in embedding]
+            cache_content = str(bucketed)
+            
+            # Context here is usually pdf_fingerprint passed in from app_v2.py
+            if context:
+                cache_content += str(context)[:64]
+                
+            return hashlib.md5(cache_content.encode()).hexdigest()
+        except Exception:
+            # Fallback to exact match
+            content = message
+            if context:
+                content += str(context)[:64]
+            return hashlib.md5(content.encode()).hexdigest()
 
 
 class StreamingResponseHandler:

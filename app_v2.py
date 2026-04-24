@@ -306,6 +306,13 @@ def get_ai_response_stream(
 ):
     """Get AI response with streaming, using RAG context from the vector store."""
     try:
+        # Layer 5: Query Routing
+        intent = managers['query_optimizer'].classify_intent(user_query)
+        # If groq provider, route to small or large based on intent
+        if provider == "groq":
+            use_turbo = (intent['model_tier'] == 'small')
+        n_chunks = intent['n_chunks']
+
         llm, provider_used = get_llm_with_smart_fallback(
             primary_provider=provider,
             use_smaller_model=use_turbo
@@ -318,42 +325,30 @@ def get_ai_response_stream(
             model = "groq/llama-3.1-8b-instant" if use_turbo else "groq/llama-3.3-70b-versatile"
             api_key = os.getenv("GROQ_API_KEY")
 
-        # ── RAG: retrieve semantically relevant chunks ──
+        # Layer 2 & 3: Strict RAG & Prompt Compression
         rag_context = ""
-        if doc_fingerprint:
+        if doc_fingerprint and n_chunks > 0:
             try:
-                rag_context = managers['vector_store'].build_rag_context(
+                hits = managers['vector_store'].search(
                     query=user_query,
-                    doc_fingerprint=doc_fingerprint,
-                    n_results=6,
-                    min_score=0.20,
+                    n_results=n_chunks,
+                    doc_fingerprint=doc_fingerprint
+                )
+                raw_chunks = [hit['text'] for hit in hits if hit['score'] >= 0.15]
+                
+                # Compress the retrieved chunks
+                rag_context = managers['query_optimizer'].compress_chunks(
+                    chunks=raw_chunks,
+                    query=user_query,
+                    api_key=api_key,
+                    model="groq/llama-3.1-8b-instant" if os.getenv("GROQ_API_KEY") else model
                 )
             except Exception as rag_err:
-                # Graceful fallback — use classic query optimizer
+                print(f"RAG Error: {rag_err}")
                 rag_context = ""
 
-        # Fall back to classic optimizer if RAG returned nothing
-        if rag_context:
-            final_context = rag_context
-        else:
-            final_context = managers['query_optimizer'].optimize_context(
-                pdf_context, user_query, max_tokens=3000
-            )[:10000]
-
-        # Enhanced system prompt with citation guidance
-        system_prompt = f"""You are an expert research assistant analyzing academic papers and documents.
-
-Relevant Document Excerpts (retrieved via semantic search):
-{final_context}
-
-Instructions:
-- Answer using ONLY the provided excerpts above.
-- Reference specific chunks or page numbers when visible (use "Page X" or "Chunk N").
-- Use academic language appropriate for research.
-- If the answer is not in the excerpts, say so clearly.
-- Format responses with proper structure and citations.
-- When providing statistics or data, present them with clear labels.
-- Include confidence indicators when making claims."""
+        # Layer 7: System Prompt Optimization (Tight)
+        system_prompt = f"Expert research assistant. Answer from provided context only. Cite page numbers. Be precise.\n\nContext:\n{rag_context}"
 
         messages = [
             {"role": "system", "content": system_prompt},

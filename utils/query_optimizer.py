@@ -285,3 +285,51 @@ class QueryOptimizer:
         keywords = [w for w in words if w not in stop_words and len(w) > 3]
         
         return keywords
+
+    def classify_intent(self, query: str) -> Dict:
+        """
+        Layer 5: Query Routing
+        Classify intent to dispatch accordingly (simple factual vs complex synthesis vs summarize).
+        """
+        q_lower = query.lower()
+        if any(word in q_lower for word in ['summarize', 'summary', 'overview', 'TLDR']):
+            return {'type': 'summarization', 'model_tier': 'small', 'n_chunks': 0}
+        
+        complex_words = ['compare', 'synthesize', 'evaluate', 'difference', 'why', 'methodology', 'framework']
+        if any(word in q_lower for word in complex_words) or len(query.split()) > 15:
+            return {'type': 'complex', 'model_tier': 'large', 'n_chunks': 5}
+            
+        return {'type': 'factual', 'model_tier': 'small', 'n_chunks': 2}
+
+    def compress_chunks(self, chunks: List[str], query: str, api_key: str, model: str = "groq/llama-3.1-8b-instant") -> str:
+        """
+        Layer 3: Prompt Compression
+        Use a cheap/fast model to compress retrieved chunks before sending to a larger model.
+        """
+        if not chunks:
+            return ""
+            
+        import litellm
+        compressed_parts = []
+        for i, chunk in enumerate(chunks):
+            # If the chunk is relatively small, just use it directly
+            if len(chunk) < 500:
+                compressed_parts.append(f"[Chunk {i+1}]: {chunk}")
+                continue
+                
+            prompt = f"Extract the key facts from this text relevant to the query: '{query}'. Keep it under 150 words. Text: {chunk}"
+            try:
+                response = litellm.completion(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    api_key=api_key,
+                    max_tokens=200,
+                    temperature=0.1
+                )
+                compressed = response.choices[0].message.content.strip()
+                compressed_parts.append(f"[Chunk {i+1} summary]: {compressed}")
+            except Exception as e:
+                # Fallback to raw if compression fails
+                compressed_parts.append(f"[Chunk {i+1}]: {chunk[:500]}...")
+                
+        return "\n\n".join(compressed_parts)
