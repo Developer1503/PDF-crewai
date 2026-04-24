@@ -26,6 +26,8 @@ from components.chat_ui import (
     inject_clipboard_script,
     _detect_stats,
 )
+import streamlit.components.v1 as components
+from utils.knowledge_graph import KnowledgeGraphGenerator
 
 # Load environment variables
 load_dotenv()
@@ -427,6 +429,7 @@ with st.sidebar:
 
     pages = [
         ("📄", "Current Paper"),
+        ("🕸️", "Knowledge Graph"),
         ("🕒", "Recent Files"),
         ("👥", "Collaborations")
     ]
@@ -544,6 +547,27 @@ with st.sidebar:
 # ──────────────────────────────────────────────
 # MAIN CONTENT AREA
 # ──────────────────────────────────────────────
+
+if st.session_state.current_page == "Knowledge Graph":
+    st.markdown("## 🕸️ Knowledge Graph")
+    st.write("Visualizing concepts and relationships extracted from the paper.")
+    
+    if not st.session_state.pdf_uploaded:
+        st.warning("Please upload a PDF document first.")
+    else:
+        if st.button("Generate Graph"):
+            with st.spinner("Extracting entities and relationships using AI..."):
+                kg_gen = KnowledgeGraphGenerator(
+                    provider=st.session_state.provider,
+                    use_turbo=st.session_state.use_turbo
+                )
+                html_content = kg_gen.generate_html(st.session_state.pdf_text)
+                st.session_state.kg_html = html_content
+        
+        if hasattr(st.session_state, 'kg_html') and st.session_state.kg_html:
+            components.html(st.session_state.kg_html, height=550, scrolling=True)
+            
+    st.stop()
 
 # 1. Header bar with title and Clear History button
 col_header1, col_header2 = st.columns([5, 1])
